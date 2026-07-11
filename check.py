@@ -1,12 +1,9 @@
-import json, os, sys, urllib.parse, urllib.request
+import json, os, re, sys, urllib.parse, urllib.request
 
-PRODUKT_JSON = "https://blackroll.com/de/products/blackroll-compression-boots-second-chance.json"
-KAUF_LINK    = "https://blackroll.com/de/products/blackroll-compression-boots-second-chance"
+SEITE_URL = "https://blackroll.com/de/products/blackroll-compression-boots-second-chance"
+KAUF_LINK = SEITE_URL
 GESUCHTE_GROESSE = "M"
 STATUS_DATEI = "status.txt"
-
-def groesse(v):
-    return (v.get("option1") or v.get("title") or "").strip().upper()
 
 def sende_telegram(text):
     token   = os.environ["TELEGRAM_TOKEN"]
@@ -15,27 +12,52 @@ def sende_telegram(text):
     daten   = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
     urllib.request.urlopen(url, data=daten, timeout=30)
 
+# --- 1. Roh-HTML der Seite laden ---
+try:
+    anfrage = urllib.request.Request(SEITE_URL, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(anfrage, timeout=30) as antwort:
+        html = antwort.read().decode("utf-8", errors="ignore")
+except Exception as fehler:
+    print(f"Seite laden fehlgeschlagen: {fehler}")
+    sys.exit(0)
+
+print(f"HTML geladen, Laenge: {len(html)} Zeichen")
+
+# --- 2. DIAGNOSE: stehen ueberhaupt Varianten-Daten drin? ---
+print(f"Vorkommen von '\"available\"': {html.count(chr(34)+'available'+chr(34))}")
+print(f"Vorkommen von '\"option1\"': {html.count(chr(34)+'option1'+chr(34))}")
+
+# --- 3. Versuch: M-Variante samt Verfuegbarkeit aus eingebettetem JSON lesen ---
+# Sucht Variantenobjekte, in denen die Groesse (option1/title) und available zusammen stehen.
+verfuegbar_m = None
+muster = re.compile(
+    r'\{[^{}]*?"(?:option1|title)"\s*:\s*"' + re.escape(GESUCHTE_GROESSE) +
+    r'"[^{}]*?"available"\s*:\s*(true|false)[^{}]*?\}'
+)
+treffer = muster.search(html)
+if treffer is None:
+    # zweite Reihenfolge: available kommt vor option1/title
+    muster2 = re.compile(
+        r'\{[^{}]*?"available"\s*:\s*(true|false)[^{}]*?"(?:option1|title)"\s*:\s*"' +
+        re.escape(GESUCHTE_GROESSE) + r'"[^{}]*?\}'
+    )
+    treffer = muster2.search(html)
+
+if treffer:
+    verfuegbar_m = (treffer.group(1) == "true")
+    print(f"M-Variante gefunden. available = {verfuegbar_m}")
+else:
+    print("KEIN Varianten-Objekt fuer M im HTML gefunden.")
+    print("=> Daten sind vermutlich rein per JavaScript -> Selbstbau nicht moeglich.")
+    sys.exit(0)
+
+# --- Ab hier die bekannte Logik (Report / Monitor) ---
 modus = os.environ.get("MODUS", "monitor")
 
-# --- Daten abrufen ---
-try:
-    anfrage = urllib.request.Request(PRODUKT_JSON, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(anfrage, timeout=30) as antwort:
-        varianten = json.loads(antwort.read())["product"]["variants"]
-except Exception as fehler:
-    print(f"Abruf fehlgeschlagen: {fehler}")
-    sys.exit(0)
-
-treffer = next((v for v in varianten if groesse(v) == GESUCHTE_GROESSE.upper()), None)
-if treffer is None:
-    print(f"Keine Variante '{GESUCHTE_GROESSE}' gefunden.")
-    sys.exit(0)
-
-# --- Modus: taeglicher Morgen-Report (immer melden) ---
 if modus == "report":
-    zustand = "verfuegbar" if treffer["available"] else "ausverkauft"
+    zustand = "verfuegbar" if verfuegbar_m else "ausverkauft"
     nachricht = f"Morgen-Report: Groesse {GESUCHTE_GROESSE} ist {zustand}."
-    if treffer["available"]:
+    if verfuegbar_m:
         nachricht += f"\nJetzt bestellen: {KAUF_LINK}"
     print(nachricht)
     try:
@@ -44,8 +66,7 @@ if modus == "report":
         print(f"Telegram fehlgeschlagen: {fehler}")
     sys.exit(0)
 
-# --- Modus: Monitor (nur bei Zustandswechsel melden) ---
-jetzt = "verfuegbar" if treffer["available"] else "ausverkauft"
+jetzt = "verfuegbar" if verfuegbar_m else "ausverkauft"
 
 try:
     with open(STATUS_DATEI) as f:

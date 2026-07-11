@@ -2,7 +2,7 @@ import json, os, re, sys, urllib.parse, urllib.request
 
 SEITE_URL = "https://blackroll.com/de/products/blackroll-compression-boots-second-chance"
 KAUF_LINK = SEITE_URL
-GESUCHTE_GROESSE = "S"
+GESUCHTE_GROESSE = "M"
 STATUS_DATEI = "status.txt"
 
 def sende_telegram(text):

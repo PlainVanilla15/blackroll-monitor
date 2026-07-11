@@ -1,4 +1,4 @@
-import urllib.request
+import re, urllib.request
 
 SEITE_URL = "https://blackroll.com/de/products/blackroll-compression-boots-second-chance"
 
@@ -8,18 +8,15 @@ with urllib.request.urlopen(anfrage, timeout=30) as antwort:
 
 print(f"HTML-Laenge: {len(html)}")
 
-# Zeige den Text rund um jedes Vorkommen von "available"
-start = 0
-nr = 0
-while True:
-    pos = html.find('"available"', start)
-    if pos == -1:
-        break
-    nr += 1
-    von = max(0, pos - 300)
-    bis = min(len(html), pos + 120)
-    print(f"\n===== TREFFER {nr} (Position {pos}) =====")
-    print(html[von:bis])
-    start = pos + 1
+# Alle <script>-Bloecke; zeige Anfang derer, die die Varianten-Daten enthalten
+bloecke = re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL)
+print(f"Anzahl script-Bloecke: {len(bloecke)}")
 
-print(f"\nGesamt: {nr} Treffer")
+for i, b in enumerate(bloecke):
+    if '"available"' in b or 'selectedOptions' in b:
+        print(f"\n===== BLOCK {i} (Laenge {len(b)}) =====")
+        print("ANFANG (erste 400 Zeichen):")
+        print(b[:400])
+        # zeige auch, ob Groessen-Buchstaben als Werte vorkommen
+        for g in ['"S"', '"M"', '"L"']:
+            print(f'  enthaelt {g}: {g in b}')

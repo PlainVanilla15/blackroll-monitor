@@ -2,8 +2,7 @@ name: Blackroll M-Monitor
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
-    - cron: "0 5 * * *"
+    - cron: "*/5 * * * *"    # alle 5 Minuten (GitHub feuert real seltener)
   workflow_dispatch:
 
 permissions:
@@ -21,16 +20,15 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MODUS: ${{ github.event.schedule == '0 5 * * *' && 'report' || 'monitor' }}
         run: python check.py
       - name: Status speichern
         run: |
-          if [ -n "$(git status --porcelain status.txt)" ]; then
-            git config user.name "monitor-bot"
-            git config user.email "bot@example.com"
-            git add status.txt
-            git commit -m "Status aktualisiert"
-            git push
+          git config user.name "monitor-bot"
+          git config user.email "bot@example.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Keine Aenderung."
           else
-            echo "Keine Statusaenderung."
+            git commit -m "Status/Report aktualisiert"
+            git push
           fi

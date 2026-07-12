@@ -1,9 +1,13 @@
 import json, os, re, sys, urllib.parse, urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 SEITE_URL = "https://blackroll.com/de/products/blackroll-compression-boots-second-chance"
 KAUF_LINK = SEITE_URL
 GESUCHTE_GROESSE = "M"
 STATUS_DATEI = "status.txt"
+REPORT_DATEI = "report_datum.txt"
+REPORT_AB_STUNDE = 7          # Report beim ersten Lauf ab 7 Uhr deutscher Zeit
 
 def sende_telegram(text):
     token   = os.environ["TELEGRAM_TOKEN"]
@@ -21,7 +25,7 @@ except Exception as fehler:
     print(f"Seite laden fehlgeschlagen: {fehler}")
     sys.exit(0)
 
-# --- 2. Nuxt-Datenpaket (grosses Array) aus den <script>-Bloecken holen ---
+# --- 2. Nuxt-Datenpaket holen ---
 bloecke = re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL)
 payload = None
 for b in bloecke:
@@ -40,14 +44,12 @@ except Exception as fehler:
     print(f"Datenpaket nicht lesbar: {fehler}")
     sys.exit(0)
 
-# --- 3. Hilfsfunktion: Zahlen-Verweis in echten Wert aufloesen ---
+# --- 3. Verweise aufloesen und Groessen bestimmen ---
 def wert(idx):
-    # Objektwerte im Nuxt-Paket sind Verweise (Zahlen) auf andere Array-Eintraege.
     if isinstance(idx, int) and 0 <= idx < len(arr):
         return arr[idx]
     return idx
 
-# --- 4. Alle Varianten finden und Groesse -> Verfuegbarkeit zuordnen ---
 def ist_variante(o):
     return isinstance(o, dict) and "available" in o and "sku" in o and "selectedOptions" in o
 
@@ -55,15 +57,14 @@ groessen = {}
 for o in arr:
     if not ist_variante(o):
         continue
-    verf = wert(o["available"])            # true / false
+    verf = wert(o["available"])
     groesse = None
-    # bevorzugt ueber selectedOptions -> [{"name":..,"value":"M"}]
     so = wert(o["selectedOptions"])
     if isinstance(so, list) and so:
         erste = wert(so[0])
         if isinstance(erste, dict) and "value" in erste:
             groesse = wert(erste["value"])
-    if not isinstance(groesse, str):       # Fallback: title
+    if not isinstance(groesse, str):
         groesse = wert(o.get("title"))
     if isinstance(groesse, str) and isinstance(verf, bool):
         groessen[groesse] = verf
@@ -76,21 +77,34 @@ if GESUCHTE_GROESSE not in groessen:
 
 verfuegbar_m = groessen[GESUCHTE_GROESSE]
 
-# --- 5. Report- bzw. Monitor-Logik (wie zuvor) ---
-modus = os.environ.get("MODUS", "monitor")
+# --- 4. Taeglicher Report: erster Lauf ab 7 Uhr deutscher Zeit ---
+jetzt_de = datetime.now(ZoneInfo("Europe/Berlin"))
+heute = jetzt_de.strftime("%Y-%m-%d")
 
-if modus == "report":
-    zustand = "verfuegbar" if verfuegbar_m else "ausverkauft"
-    nachricht = f"Morgen-Report: Groesse {GESUCHTE_GROESSE} ist {zustand}."
-    if verfuegbar_m:
-        nachricht += f"\nJetzt bestellen: {KAUF_LINK}"
-    print(nachricht)
+if jetzt_de.hour >= REPORT_AB_STUNDE:
     try:
-        sende_telegram(nachricht)
-    except Exception as fehler:
-        print(f"Telegram fehlgeschlagen: {fehler}")
-    sys.exit(0)
+        with open(REPORT_DATEI) as f:
+            letzter_report = f.read().strip()
+    except FileNotFoundError:
+        letzter_report = ""
+    if letzter_report != heute:
+        zustand = "verfuegbar" if verfuegbar_m else "ausverkauft"
+        nachricht = f"Morgen-Report ({jetzt_de.strftime('%H:%M')}): Groesse {GESUCHTE_GROESSE} ist {zustand}."
+        if verfuegbar_m:
+            nachricht += f"\nJetzt bestellen: {KAUF_LINK}"
+        print("Report faellig ->", nachricht)
+        try:
+            sende_telegram(nachricht)
+            with open(REPORT_DATEI, "w") as f:
+                f.write(heute)   # erst nach Erfolg merken
+        except Exception as fehler:
+            print(f"Report-Telegram fehlgeschlagen: {fehler}")
+    else:
+        print("Report heute bereits gesendet.")
+else:
+    print(f"Vor {REPORT_AB_STUNDE} Uhr (jetzt {jetzt_de.strftime('%H:%M')}) - kein Report.")
 
+# --- 5. Monitor: nur bei Zustandswechsel melden ---
 jetzt = "verfuegbar" if verfuegbar_m else "ausverkauft"
 
 try:
@@ -99,25 +113,22 @@ try:
 except FileNotFoundError:
     vorher = "unbekannt"
 
-print(f"vorher: {vorher} | jetzt: {jetzt}")
+print(f"Monitor: vorher={vorher} | jetzt={jetzt}")
 
-if jetzt == vorher:
+if jetzt != vorher:
+    nachricht = None
+    if jetzt == "verfuegbar":
+        nachricht = f"Groesse {GESUCHTE_GROESSE} ist JETZT VERFUEGBAR!\n{KAUF_LINK}"
+    elif jetzt == "ausverkauft" and vorher == "verfuegbar":
+        nachricht = f"Groesse {GESUCHTE_GROESSE} ist wieder ausverkauft."
+    if nachricht:
+        print("Monitor-Alarm ->", nachricht)
+        try:
+            sende_telegram(nachricht)
+        except Exception as fehler:
+            print(f"Monitor-Telegram fehlgeschlagen: {fehler}")
+            sys.exit(1)   # Status NICHT speichern -> naechster Lauf versucht erneut
+    with open(STATUS_DATEI, "w") as f:
+        f.write(jetzt)
+else:
     print("Keine Aenderung.")
-    sys.exit(0)
-
-nachricht = None
-if jetzt == "verfuegbar":
-    nachricht = f"Groesse {GESUCHTE_GROESSE} ist JETZT VERFUEGBAR!\n{KAUF_LINK}"
-elif jetzt == "ausverkauft" and vorher == "verfuegbar":
-    nachricht = f"Groesse {GESUCHTE_GROESSE} ist wieder ausverkauft."
-
-if nachricht:
-    print(nachricht)
-    try:
-        sende_telegram(nachricht)
-    except Exception as fehler:
-        print(f"Telegram fehlgeschlagen: {fehler}")
-        sys.exit(1)
-
-with open(STATUS_DATEI, "w") as f:
-    f.write(jetzt)

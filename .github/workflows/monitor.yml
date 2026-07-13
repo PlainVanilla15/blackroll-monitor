@@ -1,9 +1,7 @@
 name: Blackroll M-Monitor
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"    # alle 5 Minuten (GitHub feuert real seltener)
-  workflow_dispatch:
+  workflow_dispatch:          # Ausloeser kommt jetzt von aussen (cron-job.org)
 
 permissions:
   contents: write
